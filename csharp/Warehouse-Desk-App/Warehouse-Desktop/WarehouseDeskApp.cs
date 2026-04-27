@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -6,6 +6,8 @@ namespace Warehouse_Desktop
 {
     public class WarehouseDeskApp
     {
+        public record SeedItem(string Sku, double Price, int Stock);
+
         private readonly Dictionary<string, int> stockBySku = new Dictionary<string, int>();
         private readonly Dictionary<string, int> reservedBySku = new Dictionary<string, int>();
         private readonly Dictionary<string, double> priceBySku = new Dictionary<string, double>();
@@ -16,50 +18,60 @@ namespace Warehouse_Desktop
         private double cashBalance;
         private int nextOrderNumber;
 
-        public void SeedData()
+        public void SeedData(IEnumerable<SeedItem> items, double startingCash, int startingOrderNumber)
         {
-            stockBySku["PEN-BLACK"] = 40;
-            stockBySku["PEN-BLUE"] = 25;
-            stockBySku["NOTE-A5"] = 15;
-            stockBySku["STAPLER"] = 4;
+            stockBySku.Clear();
+            reservedBySku.Clear();
+            priceBySku.Clear();
+            orderStatus.Clear();
+            orderSku.Clear();
+            orderQty.Clear();
+            eventLog.Clear();
 
-            reservedBySku["PEN-BLACK"] = 0;
-            reservedBySku["PEN-BLUE"] = 0;
-            reservedBySku["NOTE-A5"] = 0;
-            reservedBySku["STAPLER"] = 0;
+            HashSet<string> seenSkus = new HashSet<string>();
+            foreach (SeedItem item in items)
+            {
+                if (item == null)
+                {
+                    throw new ArgumentException("seed item cannot be null");
+                }
 
-            priceBySku["PEN-BLACK"] = 1.5;
-            priceBySku["PEN-BLUE"] = 1.6;
-            priceBySku["NOTE-A5"] = 4.0;
-            priceBySku["STAPLER"] = 12.0;
+                string sku = item.Sku.Trim();
+                if (sku.Length == 0)
+                {
+                    throw new ArgumentException("sku cannot be blank");
+                }
+                if (item.Price < 0)
+                {
+                    throw new ArgumentException("price cannot be negative for " + sku);
+                }
+                if (item.Stock < 0)
+                {
+                    throw new ArgumentException("stock cannot be negative for " + sku);
+                }
+                if (!seenSkus.Add(sku))
+                {
+                    throw new ArgumentException("duplicate sku in seed data: " + sku);
+                }
 
-            cashBalance = 300.0;
-            nextOrderNumber = 1001;
+                stockBySku[sku] = item.Stock;
+                priceBySku[sku] = item.Price;
+                reservedBySku[sku] = 0;
+            }
+
+            cashBalance = startingCash;
+            nextOrderNumber = startingOrderNumber;
         }
 
-        public void RunDemoDay()
+        public void Process(IEnumerable<string> commands)
         {
-            var commands = new List<string>
-            {
-                "RECV;NOTE-A5;5;2.20",
-                "SELL;alice;PEN-BLACK;10",
-                "SELL;bob;STAPLER;5",
-                "CANCEL;O1002",
-                "COUNT;STAPLER",
-                "SELL;carol;STAPLER;2",
-                "SELL;dan;NOTE-A5;14",
-                "COUNT;NOTE-A5",
-                "DUMP"
-            };
-
-            foreach (var command in commands)
+            foreach (string command in commands)
             {
                 ProcessLine(command);
             }
-            PrintEndOfDayReport();
         }
 
-        public void ProcessLine(string line)
+        private void ProcessLine(string line)
         {
             string[] parts = line.Split(';');
             string type = parts[0];
@@ -109,7 +121,7 @@ namespace Warehouse_Desktop
             if ("CANCEL".Equals(type))
             {
                 string orderId = parts[1];
-                if (!orderStatus.TryGetValue(orderId, out var status))
+                if (!orderStatus.TryGetValue(orderId, out string? status))
                 {
                     eventLog.Add("cannot cancel " + orderId + " because it does not exist");
                     return;
@@ -194,7 +206,7 @@ namespace Warehouse_Desktop
             }
 
             List<string> lowStock = new List<string>();
-            foreach (var item in stockBySku)
+            foreach (KeyValuePair<string, int> item in stockBySku)
             {
                 if (item.Value < 5)
                 {
