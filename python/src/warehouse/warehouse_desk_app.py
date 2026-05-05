@@ -1,5 +1,6 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,10 @@ class WarehouseDeskApp:
         self._order_status: dict[str, str] = {}
         self._order_sku: dict[str, str] = {}
         self._order_qty: dict[str, int] = {}
+        self._reservation_sku: dict[str, str] = {}
+        self._reservation_qty: dict[str, int] = {}
+        self._reservation_expiry: dict[str, datetime] = {}
+        self._reservation_customer: dict[str, str] = {}
         self._event_log: list[str] = []
         self._cash_balance: float = 0.0
         self._next_order_number: int = 1001
@@ -33,6 +38,10 @@ class WarehouseDeskApp:
         self._order_status.clear()
         self._order_sku.clear()
         self._order_qty.clear()
+        self._reservation_sku.clear()
+        self._reservation_qty.clear()
+        self._reservation_expiry.clear()
+        self._reservation_customer.clear()
         self._event_log.clear()
 
         seen_skus: set[str] = set()
@@ -60,9 +69,13 @@ class WarehouseDeskApp:
 
     def process(self, commands: Iterable[str]):
         for command in commands:
-            self._process_line(command)
+            self.process_line(command)
 
-    def _process_line(self, line: str):
+    def process_line(self, line: str, current_time: datetime | None = None):
+        if current_time is None:
+            current_time = datetime.now()
+
+        self._expire_reservations(current_time)
         parts = line.split(";")
         cmd = parts[0]
 
@@ -123,6 +136,64 @@ class WarehouseDeskApp:
             self._event_log.append(f"count {sku} onHand={on_hand} reserved={reserved} available={available}")
             return
 
+        if cmd == "RESERVE":
+            customer, sku = parts[1], parts[2]
+            qty = int(parts[3].strip())
+            minutes = int(parts[4].strip())
+
+            on_hand = self._stock.get(sku, 0)
+            reserved = self._reserved.get(sku, 0)
+            available = on_hand - reserved
+
+            if available < qty:
+                self._event_log.append(f"cannot reserve {qty} of {sku} for {customer}: insufficient stock")
+            else:
+                reservation_id = f"R{self._next_order_number}"
+                self._next_order_number += 1
+                self._reservation_sku[reservation_id] = sku
+                self._reservation_qty[reservation_id] = qty
+                self._reservation_customer[reservation_id] = customer
+                self._reservation_expiry[reservation_id] = current_time + timedelta(minutes=minutes)
+                self._reserved[sku] = reserved + qty
+                self._event_log.append(f"reserved {qty} of {sku} for {customer} (id={reservation_id})")
+            return
+
+        if cmd == "CONFIRM":
+            reservation_id = parts[1]
+            sku = self._reservation_sku.get(reservation_id)
+            if sku is None:
+                self._event_log.append(f"cannot confirm {reservation_id}: reservation expired or not found")
+                return
+
+            qty = self._reservation_qty[reservation_id]
+            self._stock[sku] = self._stock.get(sku, 0) - qty
+            self._reserved[sku] = self._reserved.get(sku, 0) - qty
+
+            order_id = f"O{self._next_order_number}"
+            self._next_order_number += 1
+            self._order_sku[order_id] = sku
+            self._order_qty[order_id] = qty
+            self._order_status[order_id] = "SHIPPED"
+
+            self._cash_balance += self._price.get(sku, 0.0) * qty
+
+            self._remove_reservation(reservation_id)
+            self._event_log.append(f"reservation {reservation_id} confirmed and shipped as {order_id}")
+            return
+
+        if cmd == "RELEASE":
+            reservation_id = parts[1]
+            sku = self._reservation_sku.get(reservation_id)
+            if sku is None:
+                self._event_log.append(f"cannot release {reservation_id}: reservation expired or not found")
+                return
+
+            qty = self._reservation_qty[reservation_id]
+            self._reserved[sku] = self._reserved.get(sku, 0) - qty
+            self._remove_reservation(reservation_id)
+            self._event_log.append(f"reservation {reservation_id} released")
+            return
+
         if cmd == "DUMP":
             print("---- dump ----")
             print(f"stock={self._stock}")
@@ -132,6 +203,30 @@ class WarehouseDeskApp:
             return
 
         self._event_log.append(f"unknown command: {line}")
+
+    def _expire_reservations(self, current_time: datetime):
+        expired_ids = [
+            reservation_id
+            for reservation_id, expiry in self._reservation_expiry.items()
+            if expiry <= current_time
+        ]
+
+        for reservation_id in expired_ids:
+            sku = self._reservation_sku[reservation_id]
+            qty = self._reservation_qty[reservation_id]
+            self._reserved[sku] = self._reserved.get(sku, 0) - qty
+            self._remove_reservation(reservation_id)
+            self._event_log.append(f"reservation {reservation_id} expired")
+
+    def _remove_reservation(self, reservation_id: str):
+        self._reservation_sku.pop(reservation_id, None)
+        self._reservation_qty.pop(reservation_id, None)
+        self._reservation_expiry.pop(reservation_id, None)
+        self._reservation_customer.pop(reservation_id, None)
+
+    @property
+    def event_log(self) -> tuple[str, ...]:
+        return tuple(self._event_log)
 
     def print_end_of_day_report(self):
         shipped = sum(1 for s in self._order_status.values() if s == "SHIPPED")

@@ -1,6 +1,8 @@
 package org.sammancoaching.warehouse;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.HashMap;
 import java.util.List;
@@ -16,6 +18,10 @@ public class WarehouseDeskApp {
     private final Map<String, String> orderStatus = new HashMap<>();
     private final Map<String, String> orderSku = new HashMap<>();
     private final Map<String, Integer> orderQty = new HashMap<>();
+    private final Map<String, String> reservationSku = new HashMap<>();
+    private final Map<String, Integer> reservationQty = new HashMap<>();
+    private final Map<String, LocalDateTime> reservationExpiry = new HashMap<>();
+    private final Map<String, String> reservationCustomer = new HashMap<>();
     private final List<String> eventLog = new ArrayList<>();
     private double cashBalance;
     private int nextOrderNumber;
@@ -24,6 +30,14 @@ public class WarehouseDeskApp {
         stockBySku.clear();
         reservedBySku.clear();
         priceBySku.clear();
+        orderStatus.clear();
+        orderSku.clear();
+        orderQty.clear();
+        reservationSku.clear();
+        reservationQty.clear();
+        reservationExpiry.clear();
+        reservationCustomer.clear();
+        eventLog.clear();
 
         Set<String> seenSkus = new HashSet<>();
         for (SeedItem item : items) {
@@ -60,6 +74,11 @@ public class WarehouseDeskApp {
     }
 
     private void processLine(String line) {
+        processLine(line, LocalDateTime.now());
+    }
+
+    public void processLine(String line, LocalDateTime currentTime) {
+        expireReservations(currentTime);
         String[] parts = line.split(";");
         String type = parts[0];
 
@@ -139,6 +158,72 @@ public class WarehouseDeskApp {
             return;
         }
 
+        if ("RESERVE".equals(type)) {
+            String customer = parts[1];
+            String sku = parts[2];
+            int qty = parseInt(parts[3]);
+            int minutes = parseInt(parts[4]);
+
+            int onHand = stockBySku.getOrDefault(sku, 0);
+            int reserved = reservedBySku.getOrDefault(sku, 0);
+            int available = onHand - reserved;
+
+            if (available < qty) {
+                eventLog.add("cannot reserve " + qty + " of " + sku + " for " + customer + ": insufficient stock");
+            } else {
+                String reservationId = "R" + nextOrderNumber;
+                nextOrderNumber = nextOrderNumber + 1;
+                reservationSku.put(reservationId, sku);
+                reservationQty.put(reservationId, qty);
+                reservationCustomer.put(reservationId, customer);
+                reservationExpiry.put(reservationId, currentTime.plusMinutes(minutes));
+                reservedBySku.put(sku, reserved + qty);
+                eventLog.add("reserved " + qty + " of " + sku + " for " + customer + " (id=" + reservationId + ")");
+            }
+            return;
+        }
+
+        if ("CONFIRM".equals(type)) {
+            String reservationId = parts[1];
+            String sku = reservationSku.get(reservationId);
+            if (sku == null) {
+                eventLog.add("cannot confirm " + reservationId + ": reservation expired or not found");
+                return;
+            }
+
+            int qty = reservationQty.get(reservationId);
+            stockBySku.put(sku, stockBySku.getOrDefault(sku, 0) - qty);
+            reservedBySku.put(sku, reservedBySku.getOrDefault(sku, 0) - qty);
+
+            String orderId = "O" + nextOrderNumber;
+            nextOrderNumber = nextOrderNumber + 1;
+            orderSku.put(orderId, sku);
+            orderQty.put(orderId, qty);
+            orderStatus.put(orderId, "SHIPPED");
+
+            double orderTotal = priceBySku.getOrDefault(sku, 0.0) * qty;
+            cashBalance = cashBalance + orderTotal;
+
+            removeReservation(reservationId);
+            eventLog.add("reservation " + reservationId + " confirmed and shipped as " + orderId);
+            return;
+        }
+
+        if ("RELEASE".equals(type)) {
+            String reservationId = parts[1];
+            String sku = reservationSku.get(reservationId);
+            if (sku == null) {
+                eventLog.add("cannot release " + reservationId + ": reservation expired or not found");
+                return;
+            }
+
+            int qty = reservationQty.get(reservationId);
+            reservedBySku.put(sku, reservedBySku.getOrDefault(sku, 0) - qty);
+            removeReservation(reservationId);
+            eventLog.add("reservation " + reservationId + " released");
+            return;
+        }
+
         if ("DUMP".equals(type)) {
             System.out.println("---- dump ----");
             System.out.println("stock=" + stockBySku);
@@ -157,6 +242,34 @@ public class WarehouseDeskApp {
 
     private double parseDouble(String value) {
         return Double.parseDouble(value.trim());
+    }
+
+    private void expireReservations(LocalDateTime currentTime) {
+        List<String> expiredIds = new ArrayList<>();
+        for (Map.Entry<String, LocalDateTime> entry : reservationExpiry.entrySet()) {
+            if (!entry.getValue().isAfter(currentTime)) {
+                expiredIds.add(entry.getKey());
+            }
+        }
+
+        for (String reservationId : expiredIds) {
+            String sku = reservationSku.get(reservationId);
+            int qty = reservationQty.get(reservationId);
+            reservedBySku.put(sku, reservedBySku.getOrDefault(sku, 0) - qty);
+            removeReservation(reservationId);
+            eventLog.add("reservation " + reservationId + " expired");
+        }
+    }
+
+    private void removeReservation(String reservationId) {
+        reservationSku.remove(reservationId);
+        reservationQty.remove(reservationId);
+        reservationExpiry.remove(reservationId);
+        reservationCustomer.remove(reservationId);
+    }
+
+    public List<String> getEventLog() {
+        return Collections.unmodifiableList(eventLog);
     }
 
     public void printEndOfDayReport() {

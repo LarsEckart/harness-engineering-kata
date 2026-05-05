@@ -1,0 +1,26 @@
+## reserve available stock
+reserved 2 of STAPLER for alice (id=R1001)
+count STAPLER onHand=4 reserved=2 available=2
+
+## reject reservation when stock is unavailable
+cannot reserve 5 of STAPLER for bob: insufficient stock
+
+## confirm reservation ships an order
+reserved 2 of STAPLER for alice (id=R1001)
+reservation R1001 confirmed and shipped as O1002
+count STAPLER onHand=2 reserved=0 available=2
+
+## release reservation returns stock to availability
+reserved 2 of STAPLER for alice (id=R1001)
+reservation R1001 released
+count STAPLER onHand=4 reserved=0 available=4
+
+## reservation expires before the next command
+reserved 2 of STAPLER for alice (id=R1001)
+reservation R1001 expired
+count STAPLER onHand=4 reserved=0 available=4
+
+## expired reservation cannot be confirmed
+reserved 2 of STAPLER for alice (id=R1001)
+reservation R1001 expired
+cannot confirm R1001: reservation expired or not found

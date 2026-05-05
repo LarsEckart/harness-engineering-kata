@@ -1,3 +1,5 @@
 target/
 .idea/
 .DS_Store
+.approval_tests_temp/
+*.received.*
